@@ -1,0 +1,30 @@
+{
+  "name": "infterrain",
+  "version": "1.0.0",
+  "description": "",
+  "main": "./dist/infterrain.js",
+  "module": "./dist/infterrain.js",
+  "exports": {
+    ".": "./dist/infterrain.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite build --watch"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "peerDependencies": {
+    "@babylonjs/core": ">=9.0.0",
+    "@babylonjs/loaders": ">=9.0.0"
+  },
+  "devDependencies": {
+    "@babylonjs/core": "^9.18.1",
+    "@babylonjs/loaders": "^9.18.1",
+    "vite": "^8.1.5"
+  }
+}
