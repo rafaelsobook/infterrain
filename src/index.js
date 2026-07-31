@@ -1,7 +1,7 @@
 import { runPreloads } from './preload'
 import { createInfiniteTerrain } from './terrain'
 import { createWater } from './water'
-import { createForest, DEFAULT_TREE_PATHS } from './forest'
+import { createForest, DEFAULT_TREE_PATHS, DEFAULT_FAKE_TREE_PATH } from './forest'
 import { createStatsUI } from './statsUI'
 
 // ── Convenience wrapper ───────────────────────────────────────────────────
@@ -9,10 +9,11 @@ import { createStatsUI } from './statsUI'
 // Make sure your scene has fogMode, fogColor, fogStart, fogEnd set before calling,
 // otherwise the terrain shader will default to no fog.
 // treePaths: array of 3 glb paths — [healthyTree, deadTreeVariantA, deadTreeVariantB].
-// Defaults to infterrain's bundled trees if omitted; pass your own to reskin the forest.
-export async function createOpenWorld(scene, treePaths = DEFAULT_TREE_PATHS, options = {}) {
+// fakeTreePath: cutout image used for the billboard impostor trees.
+// Both default to infterrain's bundled assets if omitted.
+export async function createOpenWorld(scene, treePaths = DEFAULT_TREE_PATHS, fakeTreePath = DEFAULT_FAKE_TREE_PATH, options = {}) {
   const { showStatsUI = false, verts = 17 } = options
-  console.log('[infterrain] createOpenWorld: start', { treePaths, options })
+  console.log('[infterrain] createOpenWorld: start', { treePaths, fakeTreePath, options })
 
   console.log('[infterrain] runPreloads: start')
   try {
@@ -44,7 +45,7 @@ export async function createOpenWorld(scene, treePaths = DEFAULT_TREE_PATHS, opt
 
   console.log('[infterrain] createForest: start')
   try {
-    await createForest(scene, treePaths)
+    await createForest(scene, treePaths, fakeTreePath)
     console.log('[infterrain] createForest: done')
   } catch (err) {
     console.error('[infterrain] createForest: FAILED', err)
@@ -70,7 +71,7 @@ export async function createOpenWorld(scene, treePaths = DEFAULT_TREE_PATHS, opt
 export { runPreloads }          from './preload'
 export { createInfiniteTerrain } from './terrain'
 export { createWater }           from './water'
-export { createForest, DEFAULT_TREE_PATHS } from './forest'
+export { createForest, DEFAULT_TREE_PATHS, DEFAULT_FAKE_TREE_PATH } from './forest'
 export {
   terrainHeight,
   backgroundTerrainHeight,

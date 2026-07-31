@@ -22,6 +22,10 @@ export const DEFAULT_TREE_PATHS = [
   '/models/trees/deadtree1.glb',
 ]
 
+// Billboard impostor used for far/cheap trees (modelIdx FAKE_TREE_IDX) — a
+// flat plane textured with this cutout, always facing the camera.
+export const DEFAULT_FAKE_TREE_PATH = '/images/fakeprops/faketree.webp'
+
 // Leaf textures here are photo cutouts on a white background — the white
 // bleeds through the leaf gaps even at full res, and once GPU-generated
 // mipmaps kick in for small/distant tree instances, that white gets
@@ -43,10 +47,10 @@ function rnd(a, b) {
   return ((v ^ (v >>> 16)) >>> 0) / 4294967296
 }
 
-function buildFakeTreeMaster(scene) {
+function buildFakeTreeMaster(scene, fakeTreePath) {
   const master = MeshBuilder.CreatePlane('master_fakeTree', { size: FAKE_TREE_SIZE }, scene)
   const mat = new StandardMaterial('fakeTreeMat', scene)
-  const tex = new Texture('/images/fakeprops/faketree.webp', scene)
+  const tex = new Texture(fakeTreePath, scene)
   tex.hasAlpha = true
   tex.updateSamplingMode(Texture.LINEAR_LINEAR)
   mat.diffuseTexture  = tex
@@ -59,7 +63,7 @@ function buildFakeTreeMaster(scene) {
   return { master, groundOffset: FAKE_TREE_SIZE / 2, billboard: true }
 }
 
-async function loadMasters(scene, treePaths) {
+async function loadMasters(scene, treePaths, fakeTreePath) {
   const masters = []
   for (const path of treePaths) {
     const { meshes } = await SceneLoader.ImportMeshAsync('', '', path, scene)
@@ -75,7 +79,7 @@ async function loadMasters(scene, treePaths) {
     meshes.filter(m => m.getTotalVertices() === 0).forEach(m => m.dispose())
     masters.push({ master, groundOffset })
   }
-  masters[FAKE_TREE_IDX] = buildFakeTreeMaster(scene)
+  masters[FAKE_TREE_IDX] = buildFakeTreeMaster(scene, fakeTreePath)
   return masters
 }
 
@@ -145,8 +149,8 @@ function spawnChunkTrees(masters, ox, oz) {
   return insts
 }
 
-export async function createForest(scene, treePaths = DEFAULT_TREE_PATHS) {
-  const masters    = await loadMasters(scene, treePaths)
+export async function createForest(scene, treePaths = DEFAULT_TREE_PATHS, fakeTreePath = DEFAULT_FAKE_TREE_PATH) {
+  const masters    = await loadMasters(scene, treePaths, fakeTreePath)
   const treeChunks = new Map()
   const buildQueue = []
   const QUEUE_BATCH = 6
