@@ -1,16 +1,18 @@
 import { runPreloads } from './preload'
 import { createInfiniteTerrain } from './terrain'
 import { createWater } from './water'
-import { createForest } from './forest'
+import { createForest, DEFAULT_TREE_PATHS } from './forest'
 import { createStatsUI } from './statsUI'
 
 // ── Convenience wrapper ───────────────────────────────────────────────────
 // Call this once after your scene is created.
 // Make sure your scene has fogMode, fogColor, fogStart, fogEnd set before calling,
 // otherwise the terrain shader will default to no fog.
-export async function createOpenWorld(scene, options = {}) {
+// treePaths: array of 3 glb paths — [healthyTree, deadTreeVariantA, deadTreeVariantB].
+// Defaults to infterrain's bundled trees if omitted; pass your own to reskin the forest.
+export async function createOpenWorld(scene, treePaths = DEFAULT_TREE_PATHS, options = {}) {
   const { showStatsUI = false, verts = 17 } = options
-  console.log('[infterrain] createOpenWorld: start', options)
+  console.log('[infterrain] createOpenWorld: start', { treePaths, options })
 
   console.log('[infterrain] runPreloads: start')
   try {
@@ -42,7 +44,7 @@ export async function createOpenWorld(scene, options = {}) {
 
   console.log('[infterrain] createForest: start')
   try {
-    await createForest(scene)
+    await createForest(scene, treePaths)
     console.log('[infterrain] createForest: done')
   } catch (err) {
     console.error('[infterrain] createForest: FAILED', err)
@@ -68,7 +70,7 @@ export async function createOpenWorld(scene, options = {}) {
 export { runPreloads }          from './preload'
 export { createInfiniteTerrain } from './terrain'
 export { createWater }           from './water'
-export { createForest }          from './forest'
+export { createForest, DEFAULT_TREE_PATHS } from './forest'
 export {
   terrainHeight,
   backgroundTerrainHeight,

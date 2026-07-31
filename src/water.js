@@ -1,6 +1,11 @@
 import { MeshBuilder, ShaderMaterial, Vector3, Color3 } from '@babylonjs/core'
 import { WATER_LEVEL } from './world'
 
+const LOG_PREFIX = '[infterrain]'
+const DEFAULT_FOG_COLOR = new Color3(0.65, 0.78, 0.88)
+const DEFAULT_FOG_START = 400
+const DEFAULT_FOG_END   = 1400
+
 const VERT = /* glsl */`
   precision highp float;
   attribute vec3 position;
@@ -47,6 +52,23 @@ const FRAG = /* glsl */`
 
 const WATER_SIZE = 12000
 
+let warnedNoFog = false
+
+function syncFog(mat, scene) {
+  try {
+    const hasFog = !!scene.fogColor && typeof scene.fogStart === 'number' && typeof scene.fogEnd === 'number'
+    if (!hasFog && !warnedNoFog) {
+      warnedNoFog = true
+      console.warn(`${LOG_PREFIX} scene.fogColor/fogStart/fogEnd not set — water is using default fog values`)
+    }
+    mat.setColor3('fogColor', hasFog ? scene.fogColor : DEFAULT_FOG_COLOR)
+    mat.setFloat('fogStart',  hasFog ? scene.fogStart : DEFAULT_FOG_START)
+    mat.setFloat('fogEnd',    hasFog ? scene.fogEnd   : DEFAULT_FOG_END)
+  } catch (err) {
+    console.error(`${LOG_PREFIX} water.js failed to sync fog uniforms:`, err)
+  }
+}
+
 export function createWater(scene) {
   const mesh = MeshBuilder.CreateGround('water', {
     width: WATER_SIZE, height: WATER_SIZE, subdivisions: 1,
@@ -62,9 +84,7 @@ export function createWater(scene) {
 
   const dir = new Vector3(0.4, 1, 0.3).normalize()
   mat.setVector3('sunDir',   dir)
-  mat.setColor3('fogColor',  scene.fogColor)
-  mat.setFloat('fogStart',   scene.fogStart)
-  mat.setFloat('fogEnd',     scene.fogEnd)
+  syncFog(mat, scene)
   mat.setVector3('camPos',   Vector3.Zero())
   mat.setFloat('uTime', 0)
   mat.alpha = 0.88
@@ -75,9 +95,7 @@ export function createWater(scene) {
   scene.onBeforeRenderObservable.add(() => {
     t += scene.getEngine().getDeltaTime() * 0.001
     mat.setFloat('uTime', t)
-    mat.setColor3('fogColor', scene.fogColor)
-    mat.setFloat('fogStart', scene.fogStart)
-    mat.setFloat('fogEnd',   scene.fogEnd)
+    syncFog(mat, scene)
     if (scene.activeCamera) {
       const cam = scene.activeCamera
       mesh.position.x = cam.position.x

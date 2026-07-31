@@ -11,6 +11,32 @@ const TREE_BASE_SCALE = 1.0
 const FAKE_TREE_IDX  = 3
 const FAKE_TREE_SIZE = 35
 
+// modelIdx 0 is the "healthy" tree, picked whenever a slot doesn't roll dead/fake
+// (see spawnChunkTrees). modelIdx 1/2 are the dead-tree alternatives, chosen
+// between each other via a coinflip. Pass a same-shaped 3-path array to
+// createOpenWorld()/createForest() to swap the actual glb assets used for
+// each role without touching this file.
+export const DEFAULT_TREE_PATHS = [
+  '/models/trees/tree_1.glb',
+  '/models/trees/dead_tree_1.glb',
+  '/models/trees/deadtree1.glb',
+]
+
+// Leaf textures here are photo cutouts on a white background — the white
+// bleeds through the leaf gaps even at full res, and once GPU-generated
+// mipmaps kick in for small/distant tree instances, that white gets
+// averaged into the leaf color too, turning far canopies pale/white.
+// Forcing bilinear-only (no mip) sampling keeps every instance reading the
+// unblurred, correctly-colored top-level texture, trading a bit of
+// distant shimmer for not having ghost-white trees.
+function disableFoliageMips(material) {
+  const mats = material?.subMaterials ?? (material ? [material] : [])
+  mats.forEach(m => {
+    const tex = m?.diffuseTexture ?? m?.albedoTexture
+    if (tex) tex.updateSamplingMode(Texture.LINEAR_LINEAR)
+  })
+}
+
 function rnd(a, b) {
   let v = (7 * 1234567 + a * 374761393 + b * 668265263) | 0
   v = Math.imul(v ^ (v >>> 13), 1274126177)
@@ -22,6 +48,7 @@ function buildFakeTreeMaster(scene) {
   const mat = new StandardMaterial('fakeTreeMat', scene)
   const tex = new Texture('/images/fakeprops/faketree.webp', scene)
   tex.hasAlpha = true
+  tex.updateSamplingMode(Texture.LINEAR_LINEAR)
   mat.diffuseTexture  = tex
   mat.specularColor   = new Color3(0, 0, 0)
   mat.backFaceCulling = false
@@ -32,15 +59,15 @@ function buildFakeTreeMaster(scene) {
   return { master, groundOffset: FAKE_TREE_SIZE / 2, billboard: true }
 }
 
-async function loadMasters(scene) {
-  const files = ['tree_1.glb', 'dead_tree_1.glb', 'deadtree1.glb']
+async function loadMasters(scene, treePaths) {
   const masters = []
-  for (const file of files) {
-    const { meshes } = await SceneLoader.ImportMeshAsync('', '/models/trees/', file, scene)
+  for (const path of treePaths) {
+    const { meshes } = await SceneLoader.ImportMeshAsync('', '', path, scene)
     const geom = meshes.filter(m => m.getTotalVertices() > 0)
     const master = Mesh.MergeMeshes(geom, true, true, undefined, false, true) ?? geom[0]
-    master.name = `master_${file}`
+    master.name = `master_${path}`
     master.refreshBoundingInfo()
+    disableFoliageMips(master.material)
     const minY = master.getBoundingInfo().boundingBox.minimum.y
     const groundOffset = -minY
     master.isVisible  = false
@@ -118,8 +145,8 @@ function spawnChunkTrees(masters, ox, oz) {
   return insts
 }
 
-export async function createForest(scene) {
-  const masters    = await loadMasters(scene)
+export async function createForest(scene, treePaths = DEFAULT_TREE_PATHS) {
+  const masters    = await loadMasters(scene, treePaths)
   const treeChunks = new Map()
   const buildQueue = []
   const QUEUE_BATCH = 6
