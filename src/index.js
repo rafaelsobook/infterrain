@@ -72,6 +72,7 @@ export { runPreloads }          from './preload'
 export { createInfiniteTerrain, sampleTerrainSurfaceHeight } from './terrain'
 export { createWater }           from './water'
 export { createForest, DEFAULT_TREE_PATHS, DEFAULT_FAKE_TREE_PATH } from './forest'
+export { createOpenWorldGrass } from './grass'
 export {
   terrainHeight,
   backgroundTerrainHeight,
