@@ -1,6 +1,7 @@
 import { Mesh, MeshBuilder, SceneLoader, StandardMaterial, Texture, Color3, Vector3, Quaternion } from '@babylonjs/core'
 import '@babylonjs/loaders/glTF'
 import { terrainHeight, roadDistance, getMountainFactor, SPAWN_X, SPAWN_Z, WATER_LEVEL } from './world'
+import { sampleTerrainSurfaceHeight } from './terrain'
 
 const CHUNK_SIZE      = 256
 const TREE_GRID       = 35
@@ -96,7 +97,7 @@ function alignToNormal(normal, yaw) {
   return tiltQuat.multiply(yawQuat)
 }
 
-function spawnChunkTrees(masters, ox, oz) {
+function spawnChunkTrees(masters, ox, oz, verts) {
   const insts = []
   const slots = Math.ceil(CHUNK_SIZE / TREE_GRID)
   for (let iz = 0; iz < slots; iz++) {
@@ -134,7 +135,11 @@ function spawnChunkTrees(masters, ox, oz) {
       const { master, groundOffset, billboard } = masters[modelIdx]
       const inst = master.createInstance(`t${k1}_${k2}`)
       const sink = groundOffset === 0 ? -(0.5 + rnd(k1 + 9, k2 + 13) * 0.5) : 0
-      inst.position.set(wx, hRaw + groundOffset * scale + sink, wz)
+      // Ground on the same flat-shaded surface the chunk mesh actually draws
+      // (not the raw analytic terrainHeight), so trees don't float over/sink
+      // into the coarse mesh wherever the real curve bulges away from it.
+      const hGround = sampleTerrainSurfaceHeight(wx, wz, verts)
+      inst.position.set(wx, hGround + groundOffset * scale + sink, wz)
       if (billboard) {
         inst.billboardMode = Mesh.BILLBOARDMODE_Y
       } else {
@@ -149,7 +154,7 @@ function spawnChunkTrees(masters, ox, oz) {
   return insts
 }
 
-export async function createForest(scene, treePaths = DEFAULT_TREE_PATHS, fakeTreePath = DEFAULT_FAKE_TREE_PATH) {
+export async function createForest(scene, treePaths = DEFAULT_TREE_PATHS, fakeTreePath = DEFAULT_FAKE_TREE_PATH, verts = 17) {
   const masters    = await loadMasters(scene, treePaths, fakeTreePath)
   const treeChunks = new Map()
   const buildQueue = []
@@ -188,7 +193,7 @@ export async function createForest(scene, treePaths = DEFAULT_TREE_PATHS, fakeTr
     if (!scene.activeCamera) return
     for (let i = 0; i < QUEUE_BATCH && buildQueue.length; i++) {
       const { key, ox, oz } = buildQueue.shift()
-      if (!treeChunks.has(key)) treeChunks.set(key, spawnChunkTrees(masters, ox, oz))
+      if (!treeChunks.has(key)) treeChunks.set(key, spawnChunkTrees(masters, ox, oz, verts))
     }
     const { x, z } = scene.activeCamera.position
     const cx = Math.floor(x / CHUNK_SIZE)

@@ -277,6 +277,32 @@ function buildChunk(scene, mat, ox, oz, verts) {
   return mesh
 }
 
+// The rendered chunk mesh only samples terrainHeight() at its (sparse, verts x
+// verts) grid vertices and flat-shades the triangles between them — it does
+// NOT follow the full analytic curve. Anything placed with the raw
+// terrainHeight(x, z) value (e.g. trees) can end up floating above, or
+// sunk below, that flat-interpolated surface whenever the true curve bulges
+// away from the straight line connecting the grid points — most visible on
+// rolling hills with a low `verts` count. This reproduces the same grid +
+// bilinear interpolation the mesh uses, so anything sampling through here
+// sits flush with what's actually drawn.
+export function sampleTerrainSurfaceHeight(x, z, verts) {
+  const step = CHUNK_SIZE / (verts - 1)
+  const ox = Math.floor(x / CHUNK_SIZE) * CHUNK_SIZE
+  const oz = Math.floor(z / CHUNK_SIZE) * CHUNK_SIZE
+  const lx = (x - ox) / step
+  const lz = (z - oz) / step
+  const ix0 = Math.min(Math.max(Math.floor(lx), 0), verts - 2)
+  const iz0 = Math.min(Math.max(Math.floor(lz), 0), verts - 2)
+  const fx  = lx - ix0
+  const fz  = lz - iz0
+  const h = (ix, iz) => terrainHeight(ox + ix * step, oz + iz * step)
+  return h(ix0,     iz0)     * (1 - fx) * (1 - fz)
+       + h(ix0 + 1, iz0)     *      fx  * (1 - fz)
+       + h(ix0,     iz0 + 1) * (1 - fx) *      fz
+       + h(ix0 + 1, iz0 + 1) *      fx  *      fz
+}
+
 export function createInfiniteTerrain(scene, options = {}) {
   const {
     onChunkBuilt,

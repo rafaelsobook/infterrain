@@ -45,7 +45,7 @@ export async function createOpenWorld(scene, treePaths = DEFAULT_TREE_PATHS, fak
 
   console.log('[infterrain] createForest: start')
   try {
-    await createForest(scene, treePaths, fakeTreePath)
+    await createForest(scene, treePaths, fakeTreePath, verts)
     console.log('[infterrain] createForest: done')
   } catch (err) {
     console.error('[infterrain] createForest: FAILED', err)
@@ -69,7 +69,7 @@ export async function createOpenWorld(scene, treePaths = DEFAULT_TREE_PATHS, fak
 
 // ── Individual exports (for custom setups) ────────────────────────────────
 export { runPreloads }          from './preload'
-export { createInfiniteTerrain } from './terrain'
+export { createInfiniteTerrain, sampleTerrainSurfaceHeight } from './terrain'
 export { createWater }           from './water'
 export { createForest, DEFAULT_TREE_PATHS, DEFAULT_FAKE_TREE_PATH } from './forest'
 export {
