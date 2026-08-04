@@ -75,6 +75,17 @@ export function createWater(scene) {
   }, scene)
   mesh.position.y  = WATER_LEVEL
   mesh.isPickable  = false
+  // Babylon's default transparent-mesh sort is by alphaIndex first (ascending),
+  // falling back to camera distance only when alphaIndex is tied - every mesh
+  // defaults to the same alphaIndex (1000), so without this the water (which
+  // recenters onto the camera's X/Z every frame, skewing its computed bounding-
+  // sphere distance) can occasionally sort as "closer" than other transparent/
+  // alpha-blended meshes (e.g. a character's hat) and get drawn after them,
+  // painting over them regardless of true depth. Forcing a lower alphaIndex
+  // makes the water always sort first (farthest), so it can never draw after -
+  // and therefore never paint over - anything else.
+  mesh.alphaIndex = 0
+
 
   const mat = new ShaderMaterial('waterMat', scene,
     { vertexSource: VERT, fragmentSource: FRAG },

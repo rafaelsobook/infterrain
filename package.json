@@ -1,7 +1,7 @@
 {
   "name": "infterrain",
   "version": "1.0.0",
-  "description": "",
+  "description": "Procedural, infinitely-streaming terrain for Babylon.js — chunked heightmap terrain with splat-mapped materials, fogged water, and forest scattering.",
   "main": "./dist/infterrain.js",
   "module": "./dist/infterrain.js",
   "exports": {
@@ -14,8 +14,21 @@
     "build": "vite build",
     "dev": "vite build --watch"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "babylonjs",
+    "babylon.js",
+    "terrain",
+    "procedural-generation",
+    "infinite-terrain",
+    "webgl",
+    "game-engine",
+    "3d"
+  ],
+  "author": "Rafael So <rafaelsobook@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rafaelsobook/infterrain.git"
+  },
   "license": "ISC",
   "type": "module",
   "peerDependencies": {
