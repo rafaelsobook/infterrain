@@ -17,15 +17,19 @@ const FAKE_TREE_SIZE = 35
 // between each other via a coinflip. Pass a same-shaped 3-path array to
 // createOpenWorld()/createForest() to swap the actual glb assets used for
 // each role without touching this file.
+// Relative (not root-absolute) - resolves against wherever index.html is
+// actually served from, rather than assuming the app sits at the domain
+// root. Callers that pass their own paths to createOpenWorld()/createForest()
+// aren't affected either way, but these are the fallback if they don't.
 export const DEFAULT_TREE_PATHS = [
-  '/models/trees/tree_1.glb',
-  '/models/trees/dead_tree_1.glb',
-  '/models/trees/deadtree1.glb',
+  './models/trees/tree_1.glb',
+  './models/trees/dead_tree_1.glb',
+  './models/trees/deadtree1.glb',
 ]
 
 // Billboard impostor used for far/cheap trees (modelIdx FAKE_TREE_IDX) — a
 // flat plane textured with this cutout, always facing the camera.
-export const DEFAULT_FAKE_TREE_PATH = '/images/fakeprops/faketree.webp'
+export const DEFAULT_FAKE_TREE_PATH = './images/fakeprops/faketree.webp'
 
 // Leaf textures here are photo cutouts on a white background — the white
 // bleeds through the leaf gaps even at full res, and once GPU-generated

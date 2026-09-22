@@ -9,20 +9,22 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write   # required for npm OIDC Trusted Publishing — no NPM_TOKEN secret needed
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           registry-url: https://registry.npmjs.org
 
+      # Trusted Publishing needs a recent npm CLI (11.5.1+); setup-node's
+      # bundled npm may be older, so make sure it's current before publishing.
+      - run: npm install -g npm@latest
       - run: npm ci
       - run: npm run build
 
       - name: Publish if version changed
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           LOCAL_VERSION=$(node -p "require('./package.json').version")
           PUBLISHED_VERSION=$(npm view infterrain version 2>/dev/null || echo "none")

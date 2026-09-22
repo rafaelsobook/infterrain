@@ -8,13 +8,18 @@ let _rockdirt   = null
 let _rockdirt2  = null
 let _road       = null
 
+// relative (not root-absolute) - resolves against wherever index.html is
+// actually being served from, instead of assuming the app sits at the
+// domain root. Matters for anything that serves a subpath as its own root
+// (e.g. VSCode Live Server serving a whole workspace, with the app nested
+// under client/dist/), not just the final production deploy.
 registerPreload(scene => {
-  _grass      = loadTexture(scene, '/textures/grass.jpg')
-  _darkGrass1 = loadTexture(scene, '/textures/first_dark_grass.jpg')
-  _darkGrass2 = loadTexture(scene, '/textures/second_dark_grass.jpg')
-  _rockdirt   = loadTexture(scene, '/textures/rockdirt.jpg')
-  _rockdirt2  = loadTexture(scene, '/textures/rockdirt2.jpg')
-  _road       = loadTexture(scene, '/textures/road.jpg')
+  _grass      = loadTexture(scene, './textures/grass.jpg')
+  _darkGrass1 = loadTexture(scene, './textures/first_dark_grass.jpg')
+  _darkGrass2 = loadTexture(scene, './textures/second_dark_grass.jpg')
+  _rockdirt   = loadTexture(scene, './textures/rockdirt.jpg')
+  _rockdirt2  = loadTexture(scene, './textures/rockdirt2.jpg')
+  _road       = loadTexture(scene, './textures/road.jpg')
 })
 
 export function groundSplatMaps() {
