@@ -1,6 +1,7 @@
 import { Mesh, MeshBuilder, ShaderMaterial, Texture } from '@babylonjs/core'
 import { terrainHeight, roadDistance, SPAWN_X, SPAWN_Z, WATER_LEVEL } from './world'
 import { sampleTerrainSurfaceHeight } from './terrain'
+import { FOG_UNIFORM_NAMES, FOG_UNIFORMS_GLSL, FOG_FACTOR_GLSL, syncFogUniforms } from './fog'
 
 const CHUNK_SIZE = 256
 
@@ -31,10 +32,17 @@ const GRASS_VERT = /* glsl */`
   attribute vec4 world3;
   uniform mat4 viewProjection;
   varying vec2 vUV;
+  varying vec3 vWorldPos;
   void main() {
     vUV = uv;
     mat4 instanceWorld = mat4(world0, world1, world2, world3);
-    gl_Position = viewProjection * instanceWorld * vec4(position, 1.0);
+    // world position kept as a varying so the fragment shader can measure its
+    // distance to the camera for fog. This shader previously computed
+    // gl_Position and discarded the world position, so grass had no way to fog
+    // even in principle.
+    vec4 worldPos = instanceWorld * vec4(position, 1.0);
+    vWorldPos = worldPos.xyz;
+    gl_Position = viewProjection * worldPos;
   }
 `
 
@@ -56,11 +64,16 @@ const GRASS_FRAG = /* glsl */`
   precision highp float;
   uniform sampler2D diffuseSampler;
   varying vec2 vUV;
+  varying vec3 vWorldPos;
+${FOG_UNIFORMS_GLSL}
+${FOG_FACTOR_GLSL}
   void main() {
     vec3 col = texture2D(diffuseSampler, vUV).rgb;
     float luma = dot(col, vec3(0.299, 0.587, 0.114));
     if (luma < 0.18) discard;
-    gl_FragColor = vec4(col, 1.0);
+    // fog applied after the alpha-cutout discard above, so only pixels that
+    // actually survive get tinted
+    gl_FragColor = vec4(mix(col, uFogColor, fogFactor(vWorldPos)), 1.0);
   }
 `
 
@@ -83,7 +96,7 @@ function buildGrassMaster(scene, type, idx) {
     fragmentSource: GRASS_FRAG,
   }, {
     attributes: ['position', 'uv', 'world0', 'world1', 'world2', 'world3'],
-    uniforms:   ['viewProjection'],
+    uniforms:   ['viewProjection', ...FOG_UNIFORM_NAMES],
     samplers:   ['diffuseSampler'],
   })
 
@@ -189,6 +202,13 @@ export async function createOpenWorldGrass(scene, types, options = {}) {
       const { key, ox, oz } = buildQueue.shift()
       if (!chunks.has(key)) chunks.set(key, spawnChunkGrass(masters, ox, oz, verts))
     }
+    // one push per grass type - each type gets its own ShaderMaterial
+    // (grassMat_0, grassMat_1, ...), and a uniform set on one does not reach
+    // the others, so a single call here would leave all but one type unfogged
+    for (const { master } of masters) {
+      syncFogUniforms(master.material, scene, scene.activeCamera.position)
+    }
+
     const { x, z } = scene.activeCamera.position
     const cx = Math.floor(x / CHUNK_SIZE)
     const cz = Math.floor(z / CHUNK_SIZE)

@@ -1,8 +1,15 @@
 import { Mesh, VertexData, ShaderMaterial, Vector3, Color3 } from '@babylonjs/core'
 import { terrainHeight, zoneBiomeAt, roadDistance, clearingAt, getMountainFactor, mesaTopBlend, campDirtAt, SPAWN_X, SPAWN_Z, spawnAreaSize } from './world'
 import { groundSplatMaps } from './textures'
+import { FOG_UNIFORM_NAMES, FOG_UNIFORMS_GLSL, FOG_FACTOR_GLSL, syncFogUniforms } from './fog'
 
 const LOG_PREFIX = '[infterrain]'
+
+// Same gate as index.js - progress tracing off by default, warn/error left
+// unconditional so real failures still surface. Set both flags to true when
+// diagnosing this module inside a host game.
+const DEBUG = false
+const log = (...args) => { if (DEBUG) console.log(...args) }
 
 const VERT = /* glsl */`
   precision highp float;
@@ -36,10 +43,8 @@ const FRAG = /* glsl */`
   uniform vec3  sunColor;
   uniform vec3  ambientColor;
   uniform float uDist;
-  uniform vec3  uCamPos;
-  uniform vec3  uFogColor;
-  uniform float uFogStart;
-  uniform float uFogEnd;
+${FOG_UNIFORMS_GLSL}
+${FOG_FACTOR_GLSL}
 
   varying vec3 vPos;
   varying vec3 vNorm;
@@ -103,11 +108,55 @@ const FRAG = /* glsl */`
     float hemi = dot(vNorm, normalize(sunDir)) * 0.32 + 0.68;
     vec3 lit   = alb * (sunColor * hemi + ambientColor);
 
-    float fogDist = length(vPos.xz - uCamPos.xz);
-    float fogT    = clamp((fogDist - uFogStart) / (uFogEnd - uFogStart), 0.0, 1.0);
-    gl_FragColor  = vec4(mix(lit, uFogColor, fogT), 1.0);
+    // fog.js owns the distance and curve maths, shared with grass.js so the
+    // two cannot drift into fogging at different rates in the same scene
+    gl_FragColor  = vec4(mix(lit, uFogColor, fogFactor(vPos)), 1.0);
   }
 `
+
+// Pushes the host scene's REAL lights into the terrain material.
+//
+// These three uniforms used to be hardcoded literals set once at material
+// creation, which meant the terrain was lit by a fixed imaginary sun and had
+// no connection to the scene's actual lights at all - a host could change
+// every light it owned and the ground would not shift by one shade. That also
+// made a day/night cycle or weather-driven lighting impossible for terrain
+// while working fine for everything else in the same scene.
+//
+// The shader only has one directional term plus a flat ambient, so this picks
+// the single strongest DirectionalLight for the sun and folds every
+// HemisphericLight into the ambient. Anything else (point, spot) is ignored -
+// they are local lights and this shader has no position-dependent term to feed
+// them into. Falls back to the previous literals when a scene has neither.
+export function syncTerrainLighting(mat, scene) {
+  let sun = null
+  let ambient = null
+
+  for (const light of scene.lights) {
+    if (!light.isEnabled()) continue
+    // duck-typed rather than instanceof, so this does not force the host to
+    // share the exact same @babylonjs/core module instance as this package
+    if (light.direction && light.getClassName?.() === 'DirectionalLight') {
+      if (!sun || light.intensity > sun.intensity) sun = light
+    } else if (light.getClassName?.() === 'HemisphericLight') {
+      if (!ambient || light.intensity > ambient.intensity) ambient = light
+    }
+  }
+
+  if (sun) {
+    // negated: a Babylon DirectionalLight.direction points the way light
+    // TRAVELS, while the shader's sunDir is the direction TOWARD the sun
+    mat.setVector3('sunDir', sun.direction.negate().normalize())
+    mat.setColor3('sunColor', sun.diffuse.scale(sun.intensity))
+  }
+
+  if (ambient) {
+    // groundColor is what a HemisphericLight bounces up from below, which is
+    // the closest thing it has to an ambient floor for ground geometry
+    const base = ambient.groundColor ?? ambient.diffuse
+    mat.setColor3('ambientColor', base.scale(ambient.intensity))
+  }
+}
 
 function lerpSplat(w, layer, t) {
   if (t <= 0) return
@@ -179,7 +228,7 @@ function createMaterial(scene) {
     fragmentSource: FRAG,
   }, {
     attributes: ['position', 'normal', 'aSplat'],
-    uniforms:   ['worldViewProjection', 'world', 'sunDir', 'sunColor', 'ambientColor', 'uDist', 'uCamPos', 'uFogColor', 'uFogStart', 'uFogEnd'],
+    uniforms:   ['worldViewProjection', 'world', 'sunDir', 'sunColor', 'ambientColor', 'uDist', ...FOG_UNIFORM_NAMES],
     samplers:   ['grassTex', 'grassTex2', 'grassTex3', 'rockTex', 'rockTex2', 'roadTex'],
   })
 
@@ -189,7 +238,7 @@ function createMaterial(scene) {
   if (missing.length) {
     console.warn(`${LOG_PREFIX} missing texture(s) from groundSplatMaps():`, missing.join(', '))
   } else {
-    console.log(`${LOG_PREFIX} textures loaded ok (grass, darkGrass1, darkGrass2, rockdirt, rockdirt2, road)`)
+    log(`${LOG_PREFIX} textures loaded ok (grass, darkGrass1, darkGrass2, rockdirt, rockdirt2, road)`)
   }
   mat.setTexture('grassTex',  grass)
   mat.setTexture('grassTex2', darkGrass1)
@@ -198,6 +247,10 @@ function createMaterial(scene) {
   mat.setTexture('rockTex2',  rockdirt2)
   mat.setTexture('roadTex',   road)
 
+  // Starting values only - syncTerrainLighting() and the per-frame block in
+  // createOpenWorld both overwrite these from the host scene's real lights and
+  // fog. They stay here so a scene with no lights at all still renders
+  // something reasonable rather than pitch black.
   const dir = new Vector3(0.4, 1, 0.3).normalize()
   mat.setVector3('sunDir',      dir)
   mat.setColor3('sunColor',     new Color3(1.00, 0.98, 0.88))
@@ -207,6 +260,8 @@ function createMaterial(scene) {
   mat.setColor3('uFogColor', new Color3(0.65, 0.78, 0.88))
   mat.setFloat('uFogStart',  400)
   mat.setFloat('uFogEnd',    1400)
+  mat.setFloat('uFogMode',    3)
+  mat.setFloat('uFogDensity', 0.01)
 
   return mat
 }
@@ -317,7 +372,7 @@ export function createInfiniteTerrain(scene, options = {}) {
   if (!scene) {
     console.error(`${LOG_PREFIX} createInfiniteTerrain() called without a scene — terrain will not render`)
   }
-  console.log(`${LOG_PREFIX} init: viewRadius=${VIEW_R} unloadRadius=${UNLOAD_R} verts=${verts} chunkSize=${CHUNK_SIZE}`)
+  log(`${LOG_PREFIX} init: viewRadius=${VIEW_R} unloadRadius=${UNLOAD_R} verts=${verts} chunkSize=${CHUNK_SIZE}`)
 
   const mat        = createMaterial(scene)
   const chunks     = new Map()
@@ -373,19 +428,21 @@ export function createInfiniteTerrain(scene, options = {}) {
         builtCount++
         if (!loggedFirstChunk) {
           loggedFirstChunk = true
-          console.log(`${LOG_PREFIX} first chunk built ok (${key}) — terrain generation is working`)
+          log(`${LOG_PREFIX} first chunk built ok (${key}) — terrain generation is working`)
         } else if (builtCount % 25 === 0) {
-          console.log(`${LOG_PREFIX} ${builtCount} chunks built, ${chunks.size} currently loaded`)
+          log(`${LOG_PREFIX} ${builtCount} chunks built, ${chunks.size} currently loaded`)
         }
         onChunkBuilt?.(mesh)
       }
     }
     const dist = Math.hypot(cam.position.x - SPAWN_X, cam.position.z - SPAWN_Z)
     mat.setFloat('uDist', dist)
-    mat.setVector3('uCamPos',  cam.position)
-    mat.setColor3('uFogColor', scene.fogColor)
-    mat.setFloat('uFogStart',  scene.fogStart)
-    mat.setFloat('uFogEnd',    scene.fogEnd)
+    // fog.js pushes uCamPos along with the fog state, shared with grass.js
+    syncFogUniforms(mat, scene, cam.position)
+    // lights re-read every frame rather than once at creation, so weather, a
+    // day/night cycle, or any runtime light change reaches the ground instead
+    // of stopping at everything else in the scene
+    syncTerrainLighting(mat, scene)
     const cx = Math.floor(cam.position.x / CHUNK_SIZE)
     const cz = Math.floor(cam.position.z / CHUNK_SIZE)
     if (cx !== prevCX || cz !== prevCZ) {
