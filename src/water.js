@@ -33,14 +33,22 @@ const FRAG = /* glsl */`
     float r2 = sin(vWorld.x * 0.11 - uTime * 0.6) * sin(vWorld.z * 0.13 + uTime * 1.1);
     float ripple = (r1 + r2) * 0.5;
 
-    vec3 deep    = vec3(0.08, 0.32, 0.52);
-    vec3 shallow = vec3(0.30, 0.62, 0.75);
+    // Swampy green, replacing the original blue. Both stops sit in the same
+    // hue family as the terrain's own grass rather than fighting it, and the
+    // gap between them is narrower than the blue pair was - stagnant water
+    // reads flatter and murkier than open water, so a wide deep-to-shallow
+    // spread would look like a clear tropical shallow instead of a swamp.
+    vec3 deep    = vec3(0.05, 0.14, 0.09);
+    vec3 shallow = vec3(0.16, 0.28, 0.14);
     vec3 col = mix(deep, shallow, clamp(ripple * 0.5 + 0.5, 0.0, 1.0));
 
     vec3 viewDir = normalize(camPos - vWorld);
     vec3 halfV   = normalize(sunDir + viewDir);
     float spec   = pow(max(dot(vec3(0.0, 1.0, 0.0), halfV), 0.0), 80.0);
-    col += vec3(0.9, 0.95, 1.0) * spec * 0.6;
+    // dimmer and warmer than the old blue-white glint. A bright specular on a
+    // dark swamp surface reads as polished glass, which is the look this is
+    // meant to avoid - murky water scatters far more light than it mirrors.
+    col += vec3(0.75, 0.80, 0.62) * spec * 0.3;
 
     float dist = length(camPos - vWorld);
     float fog  = clamp((dist - fogStart) / (fogEnd - fogStart), 0.0, 1.0);
