@@ -1,6 +1,6 @@
 import { Mesh, MeshBuilder, SceneLoader, StandardMaterial, Texture, Color3, Vector3, Quaternion } from '@babylonjs/core'
 import '@babylonjs/loaders/glTF'
-import { terrainHeight, roadDistance, getMountainFactor, SPAWN_X, SPAWN_Z, WATER_LEVEL } from './world'
+import { terrainHeight, roadDistance, getMountainFactor, SPAWN_X, SPAWN_Z, WATER_LEVEL, inRiverChannel } from './world'
 import { sampleTerrainSurfaceHeight } from './terrain'
 
 const CHUNK_SIZE      = 256
@@ -115,6 +115,10 @@ function spawnChunkTrees(masters, ox, oz, verts) {
       const dHub = Math.hypot(wx - SPAWN_X, wz - SPAWN_Z)
       if (dHub < 350) continue
       if (roadDistance(wx, wz) < 9) continue
+      // out of the water, and off the immediate shore too - a tree trunk
+      // standing at the exact waterline reads as a mistake. Same reasoning
+      // grass.js gives for why WATER_LEVEL alone does not cover the river
+      if (inRiverChannel(wx, wz, 4)) continue
       const hRaw = terrainHeight(wx, wz)
       if (hRaw < WATER_LEVEL + 2) continue
       const hX  = terrainHeight(wx + 5, wz)

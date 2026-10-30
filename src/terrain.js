@@ -1,6 +1,7 @@
 import { Mesh, VertexData, ShaderMaterial, Vector3, Color3 } from '@babylonjs/core'
-import { terrainHeight, zoneBiomeAt, roadDistance, clearingAt, getMountainFactor, mesaTopBlend, campDirtAt, SPAWN_X, SPAWN_Z, spawnAreaSize } from './world'
+import { terrainHeight, zoneBiomeAt, roadDistance, clearingAt, getMountainFactor, mesaTopBlend, campDirtAt, SPAWN_X, SPAWN_Z, spawnAreaSize, riverSplatAt, riverRockAt } from './world'
 import { groundSplatMaps } from './textures'
+import { setTerrainStep } from './river'
 import { FOG_UNIFORM_NAMES, FOG_UNIFORMS_GLSL, FOG_FACTOR_GLSL, syncFogUniforms } from './fog'
 
 const LOG_PREFIX = '[infterrain]'
@@ -219,6 +220,21 @@ function splatAt(x, z, slope, rd, clr) {
     lerpSplat(w, 1, 0.85 * (1 - (rd - 3.0) / 2.0))
   }
 
+  // the river bed and its shore. Applied LAST so it wins over the road and
+  // clearing passes above - where a road fords the river you are looking at a
+  // gravel crossing, not a dirt track that happens to be wet.
+  //
+  // Two layers, not one: dirt for the silt of a slow channel, rock on top of
+  // it scaled by the stretch's own rockiness, so a rapid or a gorge reads as
+  // a boulder bed while a pool reads as mud. That is river.js's per-100-unit
+  // variety showing up in the GROUND as well as in the water.
+  const riv = riverSplatAt(x, z)
+  if (riv > 0) {
+    lerpSplat(w, 1, riv * 0.9)
+    const rock = riverRockAt(x, z)
+    if (rock > 0) lerpSplat(w, 2, rock * 0.85)
+  }
+
   return w
 }
 
@@ -373,6 +389,11 @@ export function createInfiniteTerrain(scene, options = {}) {
     console.error(`${LOG_PREFIX} createInfiniteTerrain() called without a scene — terrain will not render`)
   }
   log(`${LOG_PREFIX} init: viewRadius=${VIEW_R} unloadRadius=${UNLOAD_R} verts=${verts} chunkSize=${CHUNK_SIZE}`)
+
+  // the river sizes its narrow variants against the real grid spacing, so a
+  // channel can never end up finer than the mesh is able to draw - see
+  // river.js's own note on RIVER_VARIANTS for the measurement that prompted it
+  setTerrainStep(CHUNK_SIZE / (verts - 1))
 
   const mat        = createMaterial(scene)
   const chunks     = new Map()

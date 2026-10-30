@@ -1,6 +1,7 @@
 import { runPreloads } from './preload'
 import { createInfiniteTerrain } from './terrain'
 import { createWater } from './water'
+import { createRiver } from './rivermesh'
 import { createForest, DEFAULT_TREE_PATHS, DEFAULT_FAKE_TREE_PATH } from './forest'
 import { createStatsUI } from './statsUI'
 
@@ -56,6 +57,18 @@ export async function createOpenWorld(scene, treePaths = DEFAULT_TREE_PATHS, fak
     throw err
   }
 
+  // the river's own surface, separate from the sea plane above - see
+  // rivermesh.js for why the two cannot be the same mesh
+  log('[infterrain] createRiver: start')
+  let river = null
+  try {
+    river = createRiver(scene)
+    log('[infterrain] createRiver: done')
+  } catch (err) {
+    console.error('[infterrain] createRiver: FAILED', err)
+    throw err
+  }
+
   log('[infterrain] createForest: start')
   try {
     await createForest(scene, treePaths, fakeTreePath, verts)
@@ -77,15 +90,17 @@ export async function createOpenWorld(scene, treePaths = DEFAULT_TREE_PATHS, fak
   }
 
   log('[infterrain] createOpenWorld: done')
-  return { chunks, mat }
+  return { chunks, mat, river }
 }
 
 // ── Individual exports (for custom setups) ────────────────────────────────
 export { runPreloads }          from './preload'
 export { createInfiniteTerrain, sampleTerrainSurfaceHeight } from './terrain'
 export { createWater }           from './water'
+export { createRiver }           from './rivermesh'
 export { createForest, DEFAULT_TREE_PATHS, DEFAULT_FAKE_TREE_PATH } from './forest'
 export { createOpenWorldGrass } from './grass'
+export { createMountainsInOpenWorld } from './mountains'
 export {
   terrainHeight,
   backgroundTerrainHeight,
@@ -94,4 +109,26 @@ export {
   SPAWN_X,
   SPAWN_Z,
   WATER_LEVEL,
+  // ── river ──
+  // riverSurfaceY(z) is the one a host is most likely to want: the height of
+  // the water at a given Z, e.g. to float something on it or to test whether
+  // a character is submerged. riverDepthAt(x, z) answers "am I in the water
+  // and how deep" in one call.
+  riverSurfaceY,
+  riverStrength,
+  riverDepthAt,
+  riverSplatAt,
+  riverRockAt,
+  inRiverChannel,
 } from './world'
+export {
+  riverCenterX,
+  riverProfileAt,
+  riverOffset,
+  riverAt,
+  isInRiver,
+  variantForSegment,
+  RIVER_SEGMENT,
+  RIVER_VARIANTS,
+  RIVER_BASE_X,
+} from './river'

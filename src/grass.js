@@ -1,5 +1,5 @@
 import { Mesh, MeshBuilder, ShaderMaterial, Texture } from '@babylonjs/core'
-import { terrainHeight, roadDistance, SPAWN_X, SPAWN_Z, WATER_LEVEL } from './world'
+import { terrainHeight, roadDistance, SPAWN_X, SPAWN_Z, WATER_LEVEL, inRiverChannel } from './world'
 import { sampleTerrainSurfaceHeight } from './terrain'
 import { FOG_UNIFORM_NAMES, FOG_UNIFORMS_GLSL, FOG_FACTOR_GLSL, syncFogUniforms } from './fog'
 
@@ -123,6 +123,11 @@ function spawnChunkGrass(masters, ox, oz, verts) {
       const wz = oz + hash(a, b, 2) * CHUNK_SIZE
 
       if (roadDistance(wx, wz) < 3) continue
+      // the river bed is underwater. The WATER_LEVEL test below only catches
+      // the global sea plane, which the river is not on - it has its own
+      // surface following its own bed (world.js's riverSurfaceY), so without
+      // this, grass grows on the bottom of the river
+      if (inRiverChannel(wx, wz, 1)) continue
       const hRaw = terrainHeight(wx, wz)
       if (hRaw < WATER_LEVEL + 1) continue
       const hX = terrainHeight(wx + 3, wz)

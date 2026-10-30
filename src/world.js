@@ -1,4 +1,5 @@
 import { ZONES } from './data'
+import { riverAt, riverCenterX, riverProfileAt, riverGroundInfluence, isInRiver } from './river'
 
 function hash(x, y, seed) {
   let h = (seed * 1234567 + x * 374761393 + y * 668265263) | 0
@@ -139,7 +140,10 @@ export function clearingAt(x, z) {
   return best
 }
 
-export function terrainHeight(x, z) {
+// The untouched landscape, BEFORE the river is cut into it. Split out of
+// terrainHeight so the river carve below can read the land it is carving
+// without calling back into the function it is part of.
+function baseHeight(x, z) {
   const WS = 0.003, WA = 120
   const qx = (fbm(x * WS + 1.7, z * WS + 9.2, SEED + 13, 3) - 0.5) * WA
   const qz = (fbm(x * WS + 8.3, z * WS + 2.8, SEED + 17, 3) - 0.5) * WA
@@ -180,6 +184,211 @@ export function terrainHeight(x, z) {
   }
 
   return h
+}
+
+
+// ── The river ─────────────────────────────────────────────────────────────
+//
+// river.js owns the river's PATH and CHARACTER (where it runs, how wide and
+// deep it is, what each 100-unit stretch looks like). What it deliberately
+// does not own is how high the water sits, because that is the one part that
+// genuinely depends on the land - and this file is where the land lives.
+//
+// The water surface tracks the LOWEST untouched terrain along the river's own
+// centreline within a window either side, so it descends with the landscape
+// instead of running level forever - and, because it follows the low ground
+// rather than the average ground, it stays below the banks beside it. See
+// centerlineBaseAt for why an average failed at exactly that. RIVER_WINDOW is
+// how far either way it looks.
+
+// how far below the surrounding low ground the waterline sits, before the
+// channel is cut any deeper. Keeps the surface visibly inset into its valley
+// rather than laid on top of it
+const RIVER_INSET  = 1.0
+// half-width of the window scanned along the centreline, and how many samples
+// span it
+const RIVER_WINDOW  = 130
+const RIVER_TAPS    = 11
+// how far the ground rises above the waterline by the outer edge of the bank.
+// Small on purpose: this is a shoreline, not a levee - its only job is to
+// guarantee the water is contained rather than to build a visible wall
+const LIP_RISE      = 1.2
+// extra run beyond the bank over which the shoreline eases back into whatever
+// the land was already doing, so the carve leaves no crease ring around itself
+const VALLEY_EXTRA  = 42
+// the profile is evaluated on this lattice and interpolated between - each
+// node costs RIVER_TAPS baseHeight() calls, so without it every terrain vertex
+// near the river would pay for nine extra full terrain evaluations
+const RIVER_NODE    = 8
+// a road crossing shallows the river into a ford instead of cutting the road
+// in half. Exactly the mechanism ridgeContribution above already uses to punch
+// a pass through a ridge, reused so the two behave consistently
+const FORD_HW       = 14
+const FORD_EDGE     = 46
+
+const riverNodeCache = new Map()
+const RIVER_CACHE_MAX = 4096
+
+// LOWEST untouched-terrain height along the centreline within the window.
+//
+// A minimum, not an average. An average was the first attempt and it is wrong
+// for the same reason it sounds right: wherever the land dips inside the
+// window, the mean sits above that dip, so the water surface ends up ABOVE the
+// bank beside it - measured at up to 23m of water floating on a hillside
+// across a 6km test walk. A river runs along the low ground, so the surface
+// has to track the low ground.
+//
+// A sliding-window minimum is continuous in z (as the window moves, the
+// minimum can only change as fast as the samples entering and leaving it), so
+// interpolating it across RIVER_NODE stays smooth enough for a water surface -
+// it produces long level reaches separated by gentle descents, which is what a
+// real river with pools in it does anyway.
+function centerlineBaseAt(node) {
+  const hit = riverNodeCache.get(node)
+  if (hit !== undefined) return hit
+  const z = node * RIVER_NODE
+  let lo = Infinity
+  for (let i = 0; i < RIVER_TAPS; i++) {
+    const t  = RIVER_TAPS === 1 ? 0 : (i / (RIVER_TAPS - 1)) * 2 - 1
+    const sz = z + t * RIVER_WINDOW
+    const h = baseHeight(riverCenterX(sz), sz)
+    if (h < lo) lo = h
+  }
+  const v = lo
+  // plain FIFO eviction - this is walked in streaming order, so the oldest
+  // entries are the ones furthest behind the camera
+  if (riverNodeCache.size >= RIVER_CACHE_MAX) {
+    riverNodeCache.delete(riverNodeCache.keys().next().value)
+  }
+  riverNodeCache.set(node, v)
+  return v
+}
+
+/**
+ * Height of the water surface at this Z. Constant across the channel's width
+ * by construction (it is a function of z alone), which is what makes the river
+ * read as a level sheet of water rather than a tilted one.
+ */
+export function riverSurfaceY(z) {
+  const f  = z / RIVER_NODE
+  const n0 = Math.floor(f)
+  const t  = f - n0
+  // A windowed minimum is continuous but only piecewise-LINEAR - it turns a
+  // corner every time the lowest sample in the window changes, which showed up
+  // as the water surface ramping at a visible 0.76 gradient where the window
+  // slid past a drop. This tent-weighted pass over the neighbouring lattice
+  // nodes rounds those corners off. Deliberately narrow (+-3 nodes, 24 units)
+  // next to the +-130 window the minimum itself uses, so it softens the kinks
+  // without pulling the surface back up above the banks the way a wide average
+  // did when it was computing the surface outright.
+  let sum = 0, wsum = 0
+  for (let k = -3; k <= 3; k++) {
+    const w = 4 - Math.abs(k)
+    sum  += lerp(centerlineBaseAt(n0 + k), centerlineBaseAt(n0 + k + 1), t) * w
+    wsum += w
+  }
+  return sum / wsum - RIVER_INSET
+}
+
+/**
+ * 0..1 - how present the river is here at all. Fades it out of the mountains
+ * (a river climbing a 150m mesa would be absurd) and out of the spawn hub, and
+ * pinches it shallow where a road crosses so the crossing is a ford you can
+ * walk rather than a cut you cannot.
+ */
+export function riverStrength(x, z) {
+  let s = 1 - clamp01((mountainFactor(x, z) - 0.15) / 0.35)
+  if (s <= 0) return 0
+  const dHub = Math.hypot(x - SPAWN_X, z - SPAWN_Z)
+  if (dHub < HUB_OUTER_R) s *= smooth(clamp01((dHub - HUB_INNER_R) / (HUB_OUTER_R - HUB_INNER_R)))
+  const dRoad = roadDistance(x, z)
+  if (dRoad < FORD_EDGE) s *= 0.25 + 0.75 * smooth(clamp01((dRoad - FORD_HW) / (FORD_EDGE - FORD_HW)))
+  return s
+}
+
+/**
+ * How deep the water is at this point, 0 outside the channel. The host uses
+ * this for anything that needs to know it is standing in the river - and
+ * grass/forest scattering uses it to stay out of the water.
+ */
+export function riverDepthAt(x, z) {
+  if (!riverAt(x, z).channel) return 0
+  if (riverStrength(x, z) <= 0) return 0
+  // measured against the REAL carved ground, not the ideal bed - a ford or a
+  // mountain fade leaves the bed higher than the ideal, and this has to report
+  // the water that is actually there
+  return Math.max(0, riverSurfaceY(z) - terrainHeight(x, z))
+}
+
+/**
+ * Cut the river into an already-computed terrain height.
+ *
+ * Three zones across the section, each meeting the next at exactly the same
+ * height so there is no step anywhere:
+ *
+ *   0 .. halfWidth                   bed rises from its deepest at the centre
+ *                                    to exactly the waterline at the edge, so
+ *                                    the river is naturally shallow at its
+ *                                    margins instead of a rectangular trench
+ *   halfWidth .. +bankRun            waterline up to the lip, just clear of
+ *                                    the water - this is what guarantees the
+ *                                    river is contained
+ *   +bankRun .. +valleyRun           lip eases back into untouched land
+ *
+ * bankRun scales with how deep the cut actually is, so a gorge gets a
+ * proportionally wider shoulder instead of a vertical wall - without it the
+ * deep variants cut near-cliffs wherever they crossed high ground.
+ */
+function carveRiver(x, z, h) {
+  const s = riverStrength(x, z)
+  if (s <= 0) return h
+  const r = riverAt(x, z)
+  const p = r.profile
+
+  const surface = riverSurfaceY(z)
+  const bankRun   = Math.max(p.bank, p.depth * s * 1.1)
+  const valleyRun = VALLEY_EXTRA + p.depth * s * 1.5
+  const outer = p.halfWidth + bankRun + valleyRun
+  if (r.dist >= outer) return h
+
+  const d = r.dist
+  let target
+  if (d <= p.halfWidth) {
+    const bed = surface - p.depth * s
+    target = lerp(bed, surface, smooth(d / p.halfWidth))
+  } else if (d <= p.halfWidth + bankRun) {
+    const lip = surface + LIP_RISE * s
+    target = lerp(surface, lip, smooth((d - p.halfWidth) / bankRun))
+  } else {
+    const lip = surface + LIP_RISE * s
+    target = lerp(lip, h, smooth((d - p.halfWidth - bankRun) / valleyRun))
+  }
+  // `s` also fades the whole carve, so a ford or the edge of the mountains
+  // blends the river out rather than ending it at a hard line
+  return lerp(h, target, s)
+}
+
+export function terrainHeight(x, z) {
+  return carveRiver(x, z, baseHeight(x, z))
+}
+
+/** 0..1 for the terrain splat - see river.js's riverGroundInfluence. */
+export function riverSplatAt(x, z) {
+  const s = riverStrength(x, z)
+  return s <= 0 ? 0 : riverGroundInfluence(x, z) * s
+}
+
+/** Rockiness of the bed here, 0..1, for the splat's rock layer. */
+export function riverRockAt(x, z) {
+  const s = riverStrength(x, z)
+  if (s <= 0) return 0
+  const infl = riverGroundInfluence(x, z)
+  return infl <= 0 ? 0 : riverProfileAt(z).rock * infl * s
+}
+
+/** Keeps scatter passes (grass, trees) out of the water. */
+export function inRiverChannel(x, z, margin = 0) {
+  return riverStrength(x, z) > 0.15 && isInRiver(x, z, margin)
 }
 
 export function backgroundTerrainHeight(x, z, hillSize) {
