@@ -1,5 +1,16 @@
 import { ZONES } from './data'
 import { riverAt, riverCenterX, riverProfileAt, riverGroundInfluence, isInRiver } from './river'
+import {
+  SPAWN_X, SPAWN_Z, spawnAreaSize, HUB_HEIGHT, HUB_INNER_R, HUB_OUTER_R, WATER_LEVEL,
+  CLEAR_CELL, getClearing, clearingAt, roadDistance, nearestRoad, roadPointAt,
+} from './layout'
+import { biomeHeightDelta, biomeWeightsAt, LAVA_DROP, LAVA_DEPTH } from './biomes'
+import { applySites, setGroundSource, setLavaSource, lidHeightAt } from './sites'
+
+// the layout lives in layout.js now (so biomes.js and sites.js can read the
+// roads without importing this file back) - re-exported so every existing
+// import of these from here keeps working
+export { SPAWN_X, SPAWN_Z, spawnAreaSize, WATER_LEVEL, clearingAt, roadDistance }
 
 function hash(x, y, seed) {
   let h = (seed * 1234567 + x * 374761393 + y * 668265263) | 0
@@ -45,14 +56,6 @@ function biomeWeights(x, z) {
   return { wVale, wMarsh, wPeaks }
 }
 
-export const SPAWN_X      = 0
-export const SPAWN_Z      = 500
-export const spawnAreaSize = 100
-const HUB_HEIGHT           = 2
-const HUB_INNER_R          = spawnAreaSize * 2
-const HUB_OUTER_R          = spawnAreaSize * 3.5
-
-export const WATER_LEVEL = -10
 const SEED = 42
 
 const RIDGE_H     = 26
@@ -110,40 +113,9 @@ function mountainHeight(x, z) {
   return smooth(smooth(mf)) * (mesa * 150 + topDetail)
 }
 
-const CLEAR_CELL = 650
-const CLEAR_PROB = 0.55
-
-function getClearing(cellX, cellZ) {
-  if (hash(cellX * 7 + 3, cellZ * 13 + 5, SEED + 999) > CLEAR_PROB) return null
-  const h1 = hash(cellX, cellZ, SEED + 1001)
-  const h2 = hash(cellX, cellZ, SEED + 1002)
-  const h3 = hash(cellX, cellZ, SEED + 1003)
-  const h4 = hash(cellX, cellZ, SEED + 1004)
-  const wx     = cellX * CLEAR_CELL + h1 * CLEAR_CELL
-  const wz     = cellZ * CLEAR_CELL + h2 * CLEAR_CELL
-  if (Math.hypot(wx - SPAWN_X, wz - SPAWN_Z) < 700) return null
-  const innerR = 55 + h3 * 90
-  return { wx, wz, innerR, outerR: innerR * 2.5, flatH: 2 + h4 * 7 }
-}
-
-export function clearingAt(x, z) {
-  const cx0 = Math.floor(x / CLEAR_CELL)
-  const cz0 = Math.floor(z / CLEAR_CELL)
-  let best = 0
-  for (let dz = -1; dz <= 1; dz++)
-    for (let dx = -1; dx <= 1; dx++) {
-      const cl = getClearing(cx0 + dx, cz0 + dz)
-      if (!cl) continue
-      const d = Math.hypot(x - cl.wx, z - cl.wz)
-      if (d < cl.innerR) best = Math.max(best, 1 - smooth(d / cl.innerR))
-    }
-  return best
-}
-
-// The untouched landscape, BEFORE the river is cut into it. Split out of
-// terrainHeight so the river carve below can read the land it is carving
-// without calling back into the function it is part of.
-function baseHeight(x, z) {
+// The land's own lie - hills, ridges, the far mountains - before a biome,
+// a clearing or the hub touches it.
+function nativeShape(x, z) {
   const WS = 0.003, WA = 120
   const qx = (fbm(x * WS + 1.7, z * WS + 9.2, SEED + 13, 3) - 0.5) * WA
   const qz = (fbm(x * WS + 8.3, z * WS + 2.8, SEED + 17, 3) - 0.5) * WA
@@ -159,7 +131,59 @@ function baseHeight(x, z) {
   let h = large * amp + fine * 2.2 + base
   h += ridgeContribution(x, z)
   h += mountainHeight(x, z)
+  return h
+}
 
+/**
+ * The land's own height here before any biome reshapes it. The emberfrost
+ * lava sits a fixed drop below this, so it follows the lie of the land the way
+ * a slow flow would, while the biome's fissures cut below it and its plates
+ * rise above.
+ */
+export function nativeHeightAt(x, z) {
+  return nativeShape(x, z)
+}
+
+/**
+ * Height of the lava surface in emberfrost land (meaningful only there).
+ * Levelled with the land where a clearing or the hub flattens it, and never
+ * more than LAVA_DEPTH over the ground beneath - before, it ignored both and
+ * hung as much as 24 high over a clearing's lowered apron, a sheet you
+ * stepped onto and dropped straight through.
+ */
+export function lavaLevelAt(x, z) {
+  return Math.min(levelLayout(x, z, nativeShape(x, z) - LAVA_DROP), groundBeforeSites(x, z) + LAVA_DEPTH)
+}
+
+// The untouched landscape, BEFORE the river is cut into it. Split out of
+// terrainHeight so the river carve below can read the land it is carving
+// without calling back into the function it is part of.
+function baseHeight(x, z) {
+  return levelRoads(x, z, landHeight(x, z))
+}
+
+// the land before the roads are levelled into it - what a road's own surface
+// is smoothed from
+function landHeight(x, z) {
+  const native = nativeShape(x, z)
+  // biomes (biomes.js) - zero everywhere but the wilds, so roads, the hub,
+  // the river and anything a host built near them keep their old ground
+  const w = biomeWeightsAt(x, z)
+  let h = native + biomeHeightDelta(x, z, w)
+  // emberfrost's fissures fill with lava no deeper than LAVA_DEPTH. Cut to
+  // their full depth (6 under the land) the lava was taller than a player,
+  // who sank under the glowing surface into a dark trench too steep to climb
+  // out of - it read as falling into the void
+  if (w.emberfrost > 0.3) {
+    const floor = native - LAVA_DROP - LAVA_DEPTH
+    if (h < floor) h += (floor - h) * smooth(clamp01((w.emberfrost - 0.3) / 0.2))
+  }
+  return levelLayout(x, z, h)
+}
+
+// the clearings and the hub, levelled - for the land (baseHeight) and the
+// lava over it (lavaLevelAt) alike
+function levelLayout(x, z, h) {
   if (mountainFactor(x, z) < 0.15) {
     const cx0 = Math.floor(x / CLEAR_CELL)
     const cz0 = Math.floor(z / CLEAR_CELL)
@@ -184,6 +208,74 @@ function baseHeight(x, z) {
   }
 
   return h
+}
+
+
+// ── The roads ─────────────────────────────────────────────────────────────
+//
+// A road is levelled side to side and smoothed along its length, so a wagon
+// rolls along it instead of pitching over every bump. Its surface follows the
+// land along its own centreline, averaged over ROAD_SMOOTH_TAPS nodes either
+// way: the small bumps go and the big hills stay - cut a little at a crest,
+// built up a little in a dip, the way a real road is. Within ROAD_FLAT_HW of
+// the centreline the ground is that surface, easing back into the land by
+// ROAD_FLAT_EDGE.
+//
+// The drawn ground is a grid of 16-unit cells (256 chunks at verts 17), far
+// coarser than the 6-wide dirt strip, so the levelled band has to reach about
+// a cell each side for the triangles the road runs over to come out level.
+//
+// None of this reaches a biome or a special place - both keep well over a
+// hundred units from every road. The river is cut after it, so a ford still
+// dips where a road crosses the water.
+const ROAD_FLAT_HW     = 10
+const ROAD_FLAT_EDGE   = 30
+// the surface is worked out on nodes this far apart along a road and
+// interpolated between, each averaging the land over this many nodes either
+// side of it (3 x 8 = 24 units each way)
+const ROAD_NODE        = 8
+const ROAD_SMOOTH_TAPS = 2
+
+// each node is worked out once and kept - the whole network is only a few
+// thousand of them
+const roadLandCache    = new Map()
+const roadSurfaceCache = new Map()
+
+function roadLandAt(r, k) {
+  const key = r * 1e5 + k
+  let v = roadLandCache.get(key)
+  if (v === undefined) {
+    const p = roadPointAt(r, k * ROAD_NODE)
+    v = landHeight(p.x, p.z)
+    roadLandCache.set(key, v)
+  }
+  return v
+}
+
+function roadNodeSurface(r, k) {
+  const key = r * 1e5 + k
+  let v = roadSurfaceCache.get(key)
+  if (v === undefined) {
+    let sum = 0, wsum = 0
+    for (let i = -ROAD_SMOOTH_TAPS; i <= ROAD_SMOOTH_TAPS; i++) {
+      const w = ROAD_SMOOTH_TAPS + 1 - Math.abs(i)
+      sum  += roadLandAt(r, k + i) * w
+      wsum += w
+    }
+    v = sum / wsum
+    roadSurfaceCache.set(key, v)
+  }
+  return v
+}
+
+function levelRoads(x, z, h) {
+  const near = nearestRoad(x, z)
+  if (near.dist >= ROAD_FLAT_EDGE) return h
+  const f = near.s / ROAD_NODE
+  const k = Math.floor(f)
+  const surface = lerp(roadNodeSurface(near.road, k), roadNodeSurface(near.road, k + 1), f - k)
+  const t = smooth(clamp01((near.dist - ROAD_FLAT_HW) / (ROAD_FLAT_EDGE - ROAD_FLAT_HW)))
+  return lerp(surface, h, t)
 }
 
 
@@ -251,7 +343,9 @@ function centerlineBaseAt(node) {
   for (let i = 0; i < RIVER_TAPS; i++) {
     const t  = RIVER_TAPS === 1 ? 0 : (i / (RIVER_TAPS - 1)) * 2 - 1
     const sz = z + t * RIVER_WINDOW
-    const h = baseHeight(riverCenterX(sz), sz)
+    // the land before the roads are levelled in - a road crossing must not
+    // move the water, or the whole reach either side of it shifts too
+    const h = landHeight(riverCenterX(sz), sz)
     if (h < lo) lo = h
   }
   const v = lo
@@ -368,8 +462,23 @@ function carveRiver(x, z, h) {
   return lerp(h, target, s)
 }
 
-export function terrainHeight(x, z) {
+/** The land with the river cut into it, before any special place (sites.js) touches it. */
+export function groundBeforeSites(x, z) {
   return carveRiver(x, z, baseHeight(x, z))
+}
+setGroundSource(groundBeforeSites)
+setLavaSource(lavaLevelAt)
+
+export function terrainHeight(x, z) {
+  return applySites(x, z, carveRiver(x, z, baseHeight(x, z)))
+}
+
+/**
+ * The walkable surface here - terrainHeight, except where a site's lid covers
+ * the pit dug under a well, where it is the lid.
+ */
+export function surfaceHeight(x, z) {
+  return lidHeightAt(x, z) ?? terrainHeight(x, z)
 }
 
 /** 0..1 for the terrain splat - see river.js's riverGroundInfluence. */
@@ -409,69 +518,4 @@ export function zoneBiomeAt(z) {
   for (const zone of ZONES)
     if (z >= zone.zMin && z < zone.zMax) return zone.id
   return 'vale'
-}
-
-const ROADS = [
-  [
-    { x:   0, z:   500 }, { x: -30, z:   650 }, { x: -55, z:   820 },
-    { x: -20, z:  1000 }, { x:  10, z:  1180 }, { x:  -5, z:  1360 },
-    { x:   5, z:  1550 }, { x:  -8, z:  1750 }, { x:   0, z:  1900 },
-    { x:  15, z:  2100 }, { x:  -5, z:  2400 }, { x:  20, z:  3200 },
-    { x: -15, z:  4000 }, { x:  35, z:  4900 }, { x: -25, z:  5800 },
-    { x:  15, z:  6800 }, { x: -30, z:  7900 }, { x:  20, z:  9000 },
-    { x: -10, z: 10500 },
-  ],
-  [
-    { x:   0, z:   500 }, { x:   8, z:   385 }, { x:  -5, z:   265 },
-    { x:   0, z:   155 }, { x:  15, z:     0 }, { x: -10, z:  -900 },
-    { x:  20, z: -1900 }, { x: -15, z: -3000 }, { x:  10, z: -4200 },
-    { x: -20, z: -5500 }, { x:  15, z: -7000 },
-  ],
-  [
-    { x:     0, z: 500 }, { x:   120, z: 505 }, { x:   280, z: 490 },
-    { x:   480, z: 480 }, { x:   700, z: 465 }, { x:  1000, z: 455 },
-    { x:  1450, z: 445 }, { x:  2000, z: 440 }, { x:  2800, z: 430 },
-    { x:  4000, z: 425 }, { x:  5600, z: 415 }, { x:  7500, z: 410 },
-    { x:  9500, z: 405 },
-  ],
-  [
-    { x:     0, z: 500 }, { x:  -120, z: 520 }, { x:  -280, z: 540 },
-    { x:  -480, z: 550 }, { x:  -700, z: 555 }, { x: -1000, z: 560 },
-    { x: -1450, z: 555 }, { x: -2000, z: 550 }, { x: -2800, z: 545 },
-    { x: -4000, z: 540 }, { x: -5600, z: 530 }, { x: -7500, z: 525 },
-    { x: -9500, z: 520 },
-  ],
-  [
-    { x:   0, z:  500 }, { x:  85, z:  565 }, { x: 175, z:  625 },
-    { x: 260, z:  680 }, { x: 380, z:  780 }, { x: 550, z:  930 },
-    { x: 720, z: 1130 },
-  ],
-  [
-    { x:   0, z:  500 }, { x:  90, z:  415 }, { x: 175, z:  340 },
-    { x: 280, z:  240 }, { x: 420, z:  120 }, { x: 570, z:    0 },
-  ],
-  [
-    { x:   0, z: 1800 }, { x: 100, z: 1860 },
-    { x: 210, z: 1900 }, { x: 300, z: 1930 },
-  ],
-  [
-    { x:    0, z: 1800 }, { x: -100, z: 1860 },
-    { x: -210, z: 1900 }, { x: -300, z: 1930 },
-  ],
-]
-
-export function roadDistance(x, z) {
-  let best = Infinity
-  for (const road of ROADS) {
-    for (let i = 0; i < road.length - 1; i++) {
-      const a = road[i], b = road[i + 1]
-      const abx = b.x - a.x, abz = b.z - a.z
-      const apx = x - a.x,   apz = z - a.z
-      const len2 = abx * abx + abz * abz
-      const t    = len2 > 0 ? Math.max(0, Math.min(1, (apx * abx + apz * abz) / len2)) : 0
-      const d    = Math.hypot(apx - abx * t, apz - abz * t)
-      if (d < best) best = d
-    }
-  }
-  return best
 }

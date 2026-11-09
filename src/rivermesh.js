@@ -1,6 +1,7 @@
 import { Mesh, VertexData, ShaderMaterial, Vector3 } from '@babylonjs/core'
-import { riverSurfaceY, riverStrength, riverDepthAt } from './world'
-import { riverCenterX, riverProfileAt } from './river'
+import { riverSurfaceY, riverStrength } from './world'
+import { riverCenterX, riverProfileAt, getTerrainStep } from './river'
+import { drawnHeight } from './ground'
 import { FOG_UNIFORM_NAMES, FOG_UNIFORMS_GLSL, FOG_FACTOR_GLSL, syncFogUniforms } from './fog'
 
 // ── The river's water surface ─────────────────────────────────────────────
@@ -33,7 +34,7 @@ const Z_STEP      = 4
 // columns across the channel. The cross-section is flat (the surface is level
 // across its width by construction), so this only needs enough to let the
 // shore alpha fade look smooth
-const X_DIV       = 8
+const X_DIV       = 14
 // how far off to the side the camera can be before a chunk is not worth
 // building. The river sits around x=500 and the player can be kilometres away
 // in X, where none of this would be visible
@@ -54,8 +55,9 @@ const VERT = /* glsl */`
   }
 `
 
-// aRiver.x flow speed, .y turbulence, .z 0 at the centreline to 1 at the bank,
-// .w water depth in units
+// aRiver.x flow speed, .y turbulence, .z 0 at the centreline to 1 at the
+// ribbon's outer edge, .w water depth over the DRAWN ground (negative where
+// the ribbon runs on under the bank)
 const FRAG = /* glsl */`
   precision highp float;
   uniform float uTime;
@@ -120,11 +122,18 @@ ${FOG_FACTOR_GLSL}
     float spec   = pow(max(dot(nrm, halfV), 0.0), 60.0);
     col += vec3(0.85, 0.92, 0.88) * spec * mix(0.55, 0.15, turb);
 
-    // fades out at the waterline, where the carved bed rises to meet the
+    // a lace of foam where it laps the shore
+    foam = max(foam, (1.0 - smoothstep(0.05, 0.6, depth)) * (0.25 + turb * 0.5) * step(0.0, depth));
+    col = mix(col, vec3(0.86, 0.92, 0.9), foam * 0.35);
+
+    // fades out at the waterline, where the drawn ground rises through the
     // surface and the depth genuinely goes to zero - this is what gives the
-    // river a soft shore instead of a cut edge against the ground
-    float a = clamp(depth * 1.5, 0.0, 1.0) * (1.0 - smoothstep(0.86, 1.0, edge));
-    a = clamp(a * 0.92 + foam * 0.5, 0.0, 0.95);
+    // river a soft shore instead of a cut edge against the ground. The edge
+    // term only matters where the land beside a ford sits below the water
+    // and no shore was found - there it fades instead of ending in a wall
+    if (depth <= 0.0) discard;
+    float a = clamp(depth * 1.6, 0.0, 1.0) * (1.0 - smoothstep(0.88, 1.0, edge));
+    a = clamp(a * 0.92 + foam * 0.5 * step(0.0, depth), 0.0, 0.95);
 
     col = mix(col, uFogColor, fogFactor(vWorld));
     gl_FragColor = vec4(col, a);
@@ -173,19 +182,34 @@ function buildRiverChunk(scene, mat, oz) {
   const rivers    = new Float32Array(total * 4)
   let vi = 0, ri = 0
 
+  const step = getTerrainStep()
   for (let iz = 0; iz < rows; iz++) {
     const z  = oz + iz * Z_STEP
     const cx = riverCenterX(z)
     const p  = riverProfileAt(z)
     const s  = riverStrength(cx, z)
     const surf = riverSurfaceY(z)
+    // How far out each side the water goes: to where the DRAWN ground rises
+    // through the surface, plus a little so the ribbon's own edge is buried
+    // in the bank. The ribbon used to stop at the ideal channel width - but
+    // the terrain is a 16-unit grid of flat triangles and cannot draw a bank
+    // that steep, so the drawn waterline sat beyond that width in most rows
+    // (median 1.06x, up to 1.85x), and the water ended in a cut edge
+    // hanging over lower ground - measured on 22% of the river. Found per row
+    // and per side, so it is exact wherever the grid puts the shore.
+    const bankRun = Math.max(p.bank, p.depth * s * 1.1)
+    const reach = p.halfWidth + bankRun + 12
+    const extent = side => {
+      for (let d = 0.5 * p.halfWidth; d <= reach; d += 1) {
+        if (drawnHeight(cx + side * d, z, step) >= surf + 0.05) return Math.min(d + 2, reach)
+      }
+      return reach
+    }
+    const west = extent(-1), east = extent(1)
     for (let ix = 0; ix < cols; ix++) {
-      // -1 at the west bank through 0 at the centre to +1 at the east
+      // -1 at the west edge through 0 at the centre to +1 at the east
       const u = (ix / X_DIV) * 2 - 1
-      // pulled a hair inside the true waterline. The carved bed meets the
-      // surface exactly at halfWidth, so a ribbon spanning the full width
-      // would be coplanar with the ground along both its edges and z-fight
-      const x = cx + u * p.halfWidth * 0.98
+      const x = cx + (u < 0 ? u * west : u * east)
       positions[vi++] = x
       positions[vi++] = surf
       positions[vi++] = z
@@ -193,9 +217,11 @@ function buildRiverChunk(scene, mat, oz) {
       rivers[ri++] = p.flow
       rivers[ri++] = p.turb
       rivers[ri++] = Math.abs(u)
-      // real depth against the real carved bed, so a ford or a fading stretch
-      // thins the water out on its own with nothing extra to special-case
-      rivers[ri++] = riverDepthAt(x, z) * s
+      // depth over the drawn ground, so the water fades out exactly where
+      // the visible bank comes up through it - and a ford, or a stretch the
+      // mountains are fading out, thins it on its own
+      const depth = surf - drawnHeight(x, z, step)
+      rivers[ri++] = depth > 0 ? depth * Math.max(s, 0.35) : depth
     }
   }
 

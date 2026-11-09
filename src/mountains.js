@@ -1,6 +1,7 @@
 import { Mesh, VertexData, ShaderMaterial, Texture, Vector3 } from '@babylonjs/core'
 import { terrainHeight, roadDistance, SPAWN_X, SPAWN_Z, WATER_LEVEL, inRiverChannel } from './world'
 import { sampleTerrainSurfaceHeight, syncTerrainLighting } from './terrain'
+import { inSiteFootprint } from './sites'
 import { FOG_UNIFORM_NAMES, FOG_UNIFORMS_GLSL, FOG_FACTOR_GLSL, syncFogUniforms } from './fog'
 
 // ── Landmarks scattered over the open world ───────────────────────────────
@@ -380,6 +381,8 @@ function spawnChunkLandmarks(pools, counts, ox, oz, verts) {
       if (roadDistance(wx, wz) < radius * 0.8) continue
       if (inRiverChannel(wx, wz, radius * 0.8)) continue
       if (Math.hypot(wx - SPAWN_X, wz - SPAWN_Z) < 420 + radius) continue
+      // a landmark standing on a well or a waterfall's pool would bury it
+      if (inSiteFootprint(wx, wz, radius)) continue
       const hRaw = terrainHeight(wx, wz)
       if (hRaw < WATER_LEVEL + 2) continue
 

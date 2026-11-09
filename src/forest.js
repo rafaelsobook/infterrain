@@ -2,6 +2,8 @@ import { Mesh, MeshBuilder, SceneLoader, StandardMaterial, Texture, Color3, Vect
 import '@babylonjs/loaders/glTF'
 import { terrainHeight, roadDistance, getMountainFactor, SPAWN_X, SPAWN_Z, WATER_LEVEL, inRiverChannel } from './world'
 import { sampleTerrainSurfaceHeight } from './terrain'
+import { foliageSuppression } from './biomes'
+import { inSiteFootprint } from './sites'
 
 const CHUNK_SIZE      = 256
 const TREE_GRID       = 35
@@ -119,6 +121,11 @@ function spawnChunkTrees(masters, ox, oz, verts) {
       // standing at the exact waterline reads as a mistake. Same reasoning
       // grass.js gives for why WATER_LEVEL alone does not cover the river
       if (inRiverChannel(wx, wz, 4)) continue
+      // off the special places (sites.js), and thinned out where a biome has
+      // its own growth instead (biomes.js) - no oaks in a lava field
+      if (inSiteFootprint(wx, wz, 6)) continue
+      const crowded = foliageSuppression(wx, wz, 'tree')
+      if (crowded > 0 && rnd(k1 + 21, k2 + 23) < crowded) continue
       const hRaw = terrainHeight(wx, wz)
       if (hRaw < WATER_LEVEL + 2) continue
       const hX  = terrainHeight(wx + 5, wz)

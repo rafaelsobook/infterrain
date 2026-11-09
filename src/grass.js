@@ -1,6 +1,8 @@
 import { Mesh, MeshBuilder, ShaderMaterial, Texture } from '@babylonjs/core'
 import { terrainHeight, roadDistance, SPAWN_X, SPAWN_Z, WATER_LEVEL, inRiverChannel } from './world'
 import { sampleTerrainSurfaceHeight } from './terrain'
+import { foliageSuppression } from './biomes'
+import { inSiteFootprint } from './sites'
 import { FOG_UNIFORM_NAMES, FOG_UNIFORMS_GLSL, FOG_FACTOR_GLSL, syncFogUniforms } from './fog'
 
 const CHUNK_SIZE = 256
@@ -8,6 +10,10 @@ const CHUNK_SIZE = 256
 // World-unit plane size for each named tier — tune here rather than exposing
 // raw scale numbers through the public API.
 const SIZE_SCALE = { small: 0.6, medium: 1.4, large: 3.0 }
+// How far each tier's top leans in the breeze, as a share of its own height -
+// flowers on thin stems most, the big stiff bushes least. A type's own `sway`
+// overrides this.
+const SIZE_SWAY = { small: 0.08, medium: 0.06, large: 0.035 }
 
 function hash(a, b, seed) {
   let v = (seed * 1234567 + a * 374761393 + b * 668265263) | 0
@@ -31,6 +37,10 @@ const GRASS_VERT = /* glsl */`
   attribute vec4 world2;
   attribute vec4 world3;
   uniform mat4 viewProjection;
+  uniform vec3 uCamPos;
+  uniform float uWindTime;
+  uniform float uWindSway;
+  uniform float uWindFar;
   varying vec2 vUV;
   varying vec3 vWorldPos;
   void main() {
@@ -41,6 +51,35 @@ const GRASS_VERT = /* glsl */`
     // gl_Position and discarded the world position, so grass had no way to fog
     // even in principle.
     vec4 worldPos = instanceWorld * vec4(position, 1.0);
+
+    // A slow breeze. The card bends from its foot (the planes are centred on
+    // the instance, so the foot is half the plant's height below it) by height
+    // squared, so the base stays planted and the top does the moving. Each
+    // plant takes its own tempo and phase from where it stands, and slow gusts
+    // roll across the field on top of that. Past uWindFar it is skipped - it
+    // fades out over the last fifth, and nothing that small could be seen
+    // moving that far off anyway.
+    vec3 root = instanceWorld[3].xyz;
+    float plantH = length(instanceWorld[1].xyz);
+    float windFade = 1.0 - smoothstep(uWindFar * 0.8, uWindFar, length(root.xz - uCamPos.xz));
+    if (windFade > 0.0 && uWindSway > 0.0) {
+      vec2 windDir = vec2(0.34, 0.94);
+      float h = clamp((worldPos.y - root.y) / plantH + 0.5, 0.0, 1.0);
+      vec3 p3 = fract(root.xzx * 0.1031);
+      p3 += dot(p3, p3.yzx + 33.33);
+      float r = fract((p3.x + p3.y) * p3.z);
+      float gust = sin(uWindTime * 0.45 - mod(dot(root.xz, windDir) * 0.5, 6.2832)) * 0.5 + 0.5;
+      float sway = sin(uWindTime * (0.9 + r * 0.4) + r * 6.2832) * 0.65
+                 + sin(uWindTime * (1.6 + r * 0.5) + r * 17.0) * 0.35;
+      float flutter = sin(uWindTime * (1.2 + r * 0.6) + r * 29.0);
+      vec2 bend = windDir * (gust * 0.7 + sway * (0.45 + 0.55 * gust))
+                + vec2(-windDir.y, windDir.x) * flutter * 0.25;
+      vec2 tip = bend * h * h * uWindSway * plantH * windFade;
+      worldPos.xz += tip;
+      // dipping as it leans, so it bends rather than stretches
+      worldPos.y -= dot(tip, tip) / max(2.0 * h * plantH, 0.05);
+    }
+
     vWorldPos = worldPos.xyz;
     gl_Position = viewProjection * worldPos;
   }
@@ -96,9 +135,10 @@ function buildGrassMaster(scene, type, idx) {
     fragmentSource: GRASS_FRAG,
   }, {
     attributes: ['position', 'uv', 'world0', 'world1', 'world2', 'world3'],
-    uniforms:   ['viewProjection', ...FOG_UNIFORM_NAMES],
+    uniforms:   ['viewProjection', 'uWindTime', 'uWindSway', 'uWindFar', ...FOG_UNIFORM_NAMES],
     samplers:   ['diffuseSampler'],
   })
+  mat.setFloat('uWindSway', type.sway ?? SIZE_SWAY[type.size] ?? SIZE_SWAY.medium)
 
   const tex = new Texture(type.texturePath, scene)
   // Same mip-bleed risk as the tree billboards (see forest.js) — keep
@@ -128,6 +168,10 @@ function spawnChunkGrass(masters, ox, oz, verts) {
       // surface following its own bed (world.js's riverSurfaceY), so without
       // this, grass grows on the bottom of the river
       if (inRiverChannel(wx, wz, 1)) continue
+      // see forest.js - the same two rules
+      if (inSiteFootprint(wx, wz, 2)) continue
+      const crowded = foliageSuppression(wx, wz, 'grass')
+      if (crowded > 0 && hash(a, b, 5) < crowded) continue
       const hRaw = terrainHeight(wx, wz)
       if (hRaw < WATER_LEVEL + 1) continue
       const hX = terrainHeight(wx + 3, wz)
@@ -159,15 +203,21 @@ function spawnChunkGrass(masters, ox, oz, verts) {
 //                 world total — the world streams infinitely, so there is
 //                 no "total" to speak of.
 //   size        — "small" | "medium" | "large", mapped through SIZE_SCALE.
+//   sway        — optional: how far its top leans in the breeze, as a share
+//                 of its height (default by size, SIZE_SWAY). 0 stands still.
 // options.verts should match whatever you passed to createOpenWorld()/
 // createInfiniteTerrain() — that's what makes grass ground flush with the
 // actual rendered terrain instead of the idealized (unrendered) curve.
+// options.windFar — beyond this distance from the camera grass stops swaying
+// (default 300).
 export async function createOpenWorldGrass(scene, types, options = {}) {
-  const { viewRadius = 1, unloadRadius, verts = 17 } = options
+  const { viewRadius = 1, unloadRadius, verts = 17, windFar = 300 } = options
   const VIEW_R   = viewRadius
   const UNLOAD_R = unloadRadius ?? (viewRadius + 1)
 
   const masters    = types.map((t, i) => buildGrassMaster(scene, t, i))
+  masters.forEach(({ master }) => master.material.setFloat('uWindFar', windFar))
+  const windStart  = performance.now()
   const chunks     = new Map()
   const buildQueue = []
   const QUEUE_BATCH = 4
@@ -210,8 +260,10 @@ export async function createOpenWorldGrass(scene, types, options = {}) {
     // one push per grass type - each type gets its own ShaderMaterial
     // (grassMat_0, grassMat_1, ...), and a uniform set on one does not reach
     // the others, so a single call here would leave all but one type unfogged
+    const windTime = (performance.now() - windStart) / 1000
     for (const { master } of masters) {
       syncFogUniforms(master.material, scene, scene.activeCamera.position)
+      master.material.setFloat('uWindTime', windTime)
     }
 
     const { x, z } = scene.activeCamera.position

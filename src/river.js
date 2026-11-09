@@ -118,7 +118,13 @@ let minHalfWidth = 0
  */
 export function setTerrainStep(step) {
   minHalfWidth = (step * MIN_CHANNEL_CELLS) / 2
+  terrainStep = step
 }
+
+// the grid spacing itself, for rivermesh.js - it lays the water against the
+// ground as drawn on this grid (see ground.js)
+let terrainStep = 16
+export function getTerrainStep() { return terrainStep }
 
 // Weighted pick rather than a flat one, so the river reads as a river with
 // features in it rather than a random sampler - calm/wide stretches are the

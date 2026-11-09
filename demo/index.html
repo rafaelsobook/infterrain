@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>infterrain lab</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #262f22; }
+    #view { width: 100%; height: 100%; display: block; touch-action: none; outline: none; }
+    #hud {
+      position: fixed; left: 10px; top: 10px; max-width: 46ch;
+      font: 12px/1.5 ui-monospace, Consolas, monospace; color: #e6ecd8;
+      background: rgba(10, 14, 8, 0.62); padding: 8px 12px; border-radius: 6px;
+      pointer-events: none; white-space: pre;
+    }
+    #goto {
+      position: fixed; right: 10px; top: 10px; font: 12px ui-monospace, Consolas, monospace;
+      background: rgba(10, 14, 8, 0.8); color: #e6ecd8; border: 1px solid #556; padding: 4px;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="view"></canvas>
+  <div id="hud">loading...</div>
+  <select id="goto"><option value="">go to...</option></select>
+  <script type="module" src="./main.js"></script>
+</body>
+</html>
