@@ -1,6 +1,6 @@
 {
   "name": "infterrain",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Procedural, infinitely-streaming terrain for Babylon.js — chunked heightmap terrain with splat-mapped materials, fogged water, and forest scattering.",
   "main": "./dist/infterrain.js",
   "module": "./dist/infterrain.js",
